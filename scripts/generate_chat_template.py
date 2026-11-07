@@ -1,0 +1,154 @@
+import argparse
+
+from mistral_common.integrations.chat_templates.chat_templates import (
+    convert_tokenizer_to_chat_template,
+    generate_chat_template,
+)
+from mistral_common.integrations.chat_templates.template_generator import MODEL_SETTINGS_FIELD_CHOICES
+from mistral_common.tokens.tokenizers.base import TokenizerVersion
+
+
+def main() -> None:
+    r"""Generate a chat template and save it to a file."""
+    parser = argparse.ArgumentParser(description="Generate a Mistral chat template")
+    parser.add_argument(
+        "--tokenizer_file",
+        type=str,
+        default=None,
+        help="Path to a tokenizer file for auto-detect mode",
+    )
+    parser.add_argument("--version", type=str, default=None, help="Tokenizer version (e.g., v1, v3, v7, v15)")
+    parser.add_argument("--spm", action="store_true", help="Use SentencePiece tokenizer")
+    parser.add_argument("--image", action="store_true", help="Enable image support")
+    parser.add_argument("--audio", action="store_true", help="Enable audio support")
+    parser.add_argument("--thinking", action="store_true", help="Enable thinking support (special tokens)")
+    parser.add_argument(
+        "--model_settings_fields",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated model settings fields to render "
+            f"(choices: {', '.join(MODEL_SETTINGS_FIELD_CHOICES)}). "
+            "Default when omitted: automatic (reasoning_effort at v15+, no fields below v15). "
+            "An empty value is rejected."
+        ),
+    )
+    parser.add_argument(
+        "--reasoning_effort_values",
+        type=str,
+        default=None,
+        help="Manual mode: comma-separated exposed reasoning effort values (required when reasoning_effort is enabled)",
+    )
+    parser.add_argument(
+        "--reasoning_effort_default",
+        type=str,
+        default=None,
+        help="Manual mode: default exposed reasoning effort (required when reasoning_effort is enabled)",
+    )
+    parser.add_argument(
+        "--plain_thinking",
+        action="store_true",
+        help=(
+            "Manual mode: enable plain text thinking (<think> tags). "
+            "Auto-detect mode: force plain text thinking on, overriding the auto-detected heuristic. "
+            "Mutually exclusive with --no_plain_thinking."
+        ),
+    )
+    parser.add_argument(
+        "--no_plain_thinking",
+        action="store_true",
+        help=(
+            "Auto-detect mode: force plain text thinking off, overriding the auto-detected heuristic. "
+            "No effect in manual mode, where plain thinking is already off by default. "
+            "Mutually exclusive with --plain_thinking."
+        ),
+    )
+    parser.add_argument("--default_system_prompt", type=str, default=None, help="Default system prompt to embed")
+    parser.add_argument("--saving_path", type=str, default="./chat_template.jinja", help="Output path for the template")
+    parser.add_argument(
+        "--no_special_token_variables",
+        action="store_true",
+        help="Embed literal BOS/EOS values instead of using bos_token/eos_token variables",
+    )
+    args = parser.parse_args()
+
+    if args.plain_thinking and args.no_plain_thinking:
+        parser.error("--plain_thinking and --no_plain_thinking are mutually exclusive")
+
+    if args.tokenizer_file is not None:
+        manual_flag_checks: list[tuple[bool, str]] = [
+            (args.version is not None, "--version"),
+            (args.spm, "--spm"),
+            (args.image, "--image"),
+            (args.audio, "--audio"),
+            (args.thinking, "--thinking"),
+            (args.model_settings_fields is not None, "--model_settings_fields"),
+            (args.reasoning_effort_values is not None, "--reasoning_effort_values"),
+            (args.reasoning_effort_default is not None, "--reasoning_effort_default"),
+        ]
+        conflicting = [flag for is_set, flag in manual_flag_checks if is_set]
+
+        if conflicting:
+            parser.error(f"--tokenizer_file cannot be combined with manual capability flags: {', '.join(conflicting)}")
+
+        if args.plain_thinking:
+            plain_thinking_support = True
+        elif args.no_plain_thinking:
+            plain_thinking_support = False
+        else:
+            plain_thinking_support = None
+
+        try:
+            template = convert_tokenizer_to_chat_template(
+                tokenizer_file=args.tokenizer_file,
+                system_prompt=args.default_system_prompt,
+                use_special_token_variables=not args.no_special_token_variables,
+                plain_thinking_support=plain_thinking_support,
+            )
+        except ValueError as e:
+            parser.error(str(e))
+    else:
+        if args.version is None:
+            parser.error("--version is required when --tokenizer_file is not provided")
+
+        model_settings_fields = None
+        if args.model_settings_fields is not None:
+            model_settings_fields = frozenset(
+                item.strip() for item in args.model_settings_fields.split(",") if item.strip()
+            )
+            if not model_settings_fields:
+                parser.error("--model_settings_fields must list at least one field")
+
+        reasoning_effort_values = None
+        if args.reasoning_effort_values is not None:
+            reasoning_effort_values = tuple(
+                item.strip() for item in args.reasoning_effort_values.split(",") if item.strip()
+            )
+            if not reasoning_effort_values:
+                parser.error("--reasoning_effort_values must list at least one value")
+
+        try:
+            template = generate_chat_template(
+                spm=args.spm,
+                tokenizer_version=TokenizerVersion(args.version),
+                image_support=args.image,
+                audio_support=args.audio,
+                thinking_support=args.thinking,
+                default_system_prompt=args.default_system_prompt,
+                plain_thinking_support=args.plain_thinking,
+                use_special_token_variables=not args.no_special_token_variables,
+                model_settings_fields=model_settings_fields,
+                reasoning_effort_values=reasoning_effort_values,
+                reasoning_effort_default=args.reasoning_effort_default,
+            )
+        except ValueError as e:
+            parser.error(str(e))
+
+    with open(args.saving_path, "w", encoding="utf-8") as f:
+        f.write(template)
+
+    print(f"Template saved to {args.saving_path}")
+
+
+if __name__ == "__main__":
+    main()
